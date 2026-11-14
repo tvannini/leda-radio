@@ -135,7 +135,7 @@ async function playBytes(bytes) {
     src.connect(gain); gain.connect(limiter); limiter.connect(ac.destination);
     // The long tone is paused while the voice plays and restarts when it ends (src.onended): with both playing together the voice sounded dirty
     // in the earbuds (listening test 2026-11-14, compare/earbud.html). The voice itself is audible audio, so the page stays alive meanwhile.
-    ka.pause();
+    if (Q.get('np') !== '1') ka.pause();   // ?np=1 (test) keeps the tone running during the voice
     src.onended = () => { ev('play-ended'); replying = false; ka.play().catch(() => {}); stateEl.textContent = 'In ascolto di nuove risposte.'; };
     src.start();
     stateEl.textContent = 'Leggo la risposta...';
@@ -150,6 +150,11 @@ async function playBytes(bytes) {
 document.getElementById('activate').addEventListener('click', () => {
   ac = new (window.AudioContext || window.webkitAudioContext)();   // created inside the tap (Android blocks autoplay)
   ac.resume();
+  if (Q.get('kc') !== '0') {                      // default since 2026-11-14 (?kc=0 turns it off): keeps the output stream open, so each reply starts at once at full volume (before, the first second was quiet and far, in the background)
+    const osc = ac.createOscillator(), g = ac.createGain();
+    osc.frequency.value = 40; g.gain.value = 0.002;
+    osc.connect(g); g.connect(ac.destination); osc.start();
+  }
   ka.play().then(() => ev('ka-play-ok'), (e) => ev('ka-play-ERR ' + e.name));
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Leda radio', artist: 'In ascolto' });
