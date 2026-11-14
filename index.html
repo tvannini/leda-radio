@@ -45,6 +45,9 @@ const REPO = HASH.get('r') || 'tvannini/leda-radio';
 const SRC = Q.get('src') || (GH ? 'https://api.github.com/repos/' + REPO + '/contents/last.bin?ref=reply' : PLAIN ? 'last.mp3' : 'relay/data/last.bin');
 let lastEtag = null;                              // GitHub mode: ETag of the last file seen, sent as If-None-Match (a 304 costs nothing to download)
 const POLL_MS = parseInt(Q.get('poll')) || 3000;
+// ?nt=1 (test 2026-11-14): NO tone element and NO media notification; only the inaudible Web Audio oscillator (see kc) keeps the output open.
+// Goal: no media session, so the earbuds' effect (reverb) might not be applied; risk: Android freezes the hidden page.
+const NT = Q.get('nt') === '1';
 const stateEl = document.getElementById('state'), infoEl = document.getElementById('info');
 const ka = document.getElementById('keepalive');
 // Diagnostics for the PC server log (on during the tests, ?ev=0 turns them off): events are sent as GET ev/<text>; a 404 is fine.
@@ -135,13 +138,13 @@ async function playBytes(bytes) {
     src.connect(gain); gain.connect(limiter); limiter.connect(ac.destination);
     // The long tone is paused while the voice plays and restarts when it ends (src.onended): with both playing together the voice sounded dirty
     // in the earbuds (listening test 2026-11-14, compare/earbud.html). The voice itself is audible audio, so the page stays alive meanwhile.
-    if (Q.get('np') !== '1') ka.pause();   // ?np=1 (test) keeps the tone running during the voice
-    src.onended = () => { ev('play-ended'); replying = false; ka.play().catch(() => {}); stateEl.textContent = 'In ascolto di nuove risposte.'; };
+    if (Q.get('pz') === '1') ka.pause();   // OPT-IN since 2026-11-14 03:50 (?pz=1): pausing the tone made each reply start with a quiet "far" voice (Tommaso); default = tone keeps playing
+    src.onended = () => { ev('play-ended'); replying = false; if (!NT) ka.play().catch(() => {}); stateEl.textContent = 'In ascolto di nuove risposte.'; };
     src.start();
     stateEl.textContent = 'Leggo la risposta...';
     ev('play-ok');
   } catch (e) {
-    replying = false; ka.play().catch(() => {});
+    replying = false; if (!NT) ka.play().catch(() => {});
     ev('play-ERR ' + e.name);
     stateEl.textContent = 'Il browser ha bloccato l\'audio: premi "Riascolta l\'ultima".';
   }
@@ -150,13 +153,13 @@ async function playBytes(bytes) {
 document.getElementById('activate').addEventListener('click', () => {
   ac = new (window.AudioContext || window.webkitAudioContext)();   // created inside the tap (Android blocks autoplay)
   ac.resume();
-  if (Q.get('kc') !== '0') {                      // default since 2026-11-14 (?kc=0 turns it off): keeps the output stream open, so each reply starts at once at full volume (before, the first second was quiet and far, in the background)
+  if (Q.get('kc') === '1') {                      // default since 2026-11-14 (?kc=0 turns it off): keeps the output stream open, so each reply starts at once at full volume (before, the first second was quiet and far, in the background)
     const osc = ac.createOscillator(), g = ac.createGain();
     osc.frequency.value = 40; g.gain.value = 0.002;
     osc.connect(g); g.connect(ac.destination); osc.start();
   }
-  ka.play().then(() => ev('ka-play-ok'), (e) => ev('ka-play-ERR ' + e.name));
-  if ('mediaSession' in navigator) {
+  if (!NT) ka.play().then(() => ev('ka-play-ok'), (e) => ev('ka-play-ERR ' + e.name));
+  if (!NT && 'mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Leda radio', artist: 'In ascolto' });
     navigator.mediaSession.playbackState = 'playing';
     // handlers make the session a complete one (play/pause); the tone restarts by itself, so they do nothing special
