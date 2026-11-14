@@ -166,8 +166,12 @@ document.getElementById('activate').addEventListener('click', () => {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Leda radio', artist: 'In ascolto' });
     navigator.mediaSession.playbackState = 'playing';
     // handlers make the session a complete one (play/pause); the tone restarts by itself, so they do nothing special
-    navigator.mediaSession.setActionHandler('play', () => ka.play().catch(() => {}));
-    navigator.mediaSession.setActionHandler('pause', () => ka.play().catch(() => {}));
+    navigator.mediaSession.setActionHandler('play', () => { ev('btn-play'); ka.play().catch(() => {}); });
+    navigator.mediaSession.setActionHandler('pause', () => { ev('btn-pause'); ka.play().catch(() => {}); });
+    // earbud button experiment (2026-11-14): which gestures reach the page? (single press = play/pause, double = next, triple = previous, usually)
+    for (const act of ['nexttrack', 'previoustrack', 'stop', 'seekforward', 'seekbackward']) {
+      try { navigator.mediaSession.setActionHandler(act, () => ev('btn-' + act)); } catch (e) { ev('btn-unsupported ' + act); }
+    }
   }
   active = true;
   document.getElementById('activate').hidden = true;
