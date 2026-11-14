@@ -19,6 +19,7 @@
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
+<button id="copy" class="secondary">Copia il registro (poi incollalo nella chat)</button>
 <div id="text"></div>
 <div id="log"></div>
 <audio id="ka" src="silence-tone-30s.wav" loop></audio>
@@ -115,12 +116,19 @@ $('activate').addEventListener('click', async () => {
     navigator.mediaSession.playbackState = 'playing';
     navigator.mediaSession.setActionHandler('play',  () => { log('tasto: play');  toggle(); ka.play().catch(() => {}); });
     navigator.mediaSession.setActionHandler('pause', () => { log('tasto: pause'); toggle(); ka.play().catch(() => {}); });
+    for (const act of ['nexttrack', 'previoustrack', 'stop']) {
+      try { navigator.mediaSession.setActionHandler(act, () => { log('tasto: ' + act); toggle(); }); } catch (e) { log('azione non supportata: ' + act); }
+    }
   }
   active = true;
   $('activate').hidden = true; $('manual').hidden = false;
   stateEl.textContent = 'Pronto (' + MODE + '). Premi il tasto dell\'auricolare una volta per iniziare, di nuovo per fermare.';
 });
 $('manual').addEventListener('click', toggle);
+$('copy').addEventListener('click', async () => {
+  const txt = 'MODE=' + MODE + '\n' + logEl.textContent.split('\n').reverse().join('\n') + '\nTESTO: ' + textEl.textContent;
+  try { await navigator.clipboard.writeText(txt); stateEl.textContent = 'Registro copiato: incollalo nella chat.'; } catch (e) { stateEl.textContent = 'Copia non riuscita: ' + e.message; }
+});
 document.addEventListener('visibilitychange', () => log('visibilita: ' + document.visibilityState));
 ka.addEventListener('pause', () => { if (active) ka.play().catch(() => {}); });
 </script>
