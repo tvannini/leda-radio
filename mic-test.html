@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v2)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v3)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -36,7 +36,7 @@ const t0 = Date.now();
 function log(m) { const s = ((Date.now() - t0) / 1000).toFixed(1).padStart(6) + ' s [' + document.visibilityState + '] ' + m; logEl.textContent = s + '\n' + logEl.textContent; }
 let ac = null, stream = null, listening = false, active = false;
 let rec = null, chunks = [], chunkLog = 0, recStart = 0;       // rec mode
-let sr = null, finalText = '', interim = '';                  // sr mode
+let sr = null, finalText = '', interim = '', fatal = false;                  // sr mode
 
 function beep(times) {                                         // audible feedback in the earbud (screen is usually off)
   if (!ac) return;
@@ -50,7 +50,7 @@ function beep(times) {                                         // audible feedba
 
 async function start() {
   if (listening) return;
-  listening = true; finalText = ''; interim = ''; textEl.textContent = '';
+  listening = true; fatal = false; finalText = ''; interim = ''; textEl.textContent = '';
   stateEl.textContent = 'Registro... (premi di nuovo per fermare)';
   beep(1);
   log('START (' + MODE + ')');
@@ -58,6 +58,7 @@ async function start() {
     if (MODE === 'rec') {
       const track = stream.getAudioTracks()[0];
       log('microfono usato: ' + (track && track.label) + ' state=' + (track && track.readyState) + ' muted=' + (track && track.muted));
+      track.onmute = () => log('microfono MUTO dal browser'); track.onunmute = () => log('microfono di nuovo attivo');
       rec = new MediaRecorder(stream); chunks = []; chunkLog = 0; recStart = Date.now();
       rec.ondataavailable = (e) => { chunks.push(e.data); if (chunkLog++ < 5) log('chunk ' + e.data.size + ' byte'); };
       rec.start(1000);
@@ -75,8 +76,8 @@ async function start() {
         }
         textEl.textContent = finalText + interim;
       };
-      sr.onerror = (e) => log('sr ERRORE ' + e.error);
-      sr.onend = () => { log('sr onend'); if (listening) { try { sr.start(); log('sr riavviato'); } catch (x) { log('sr riavvio fallito ' + x.message); } } };
+      sr.onerror = (e) => { log('sr ERRORE ' + e.error); if (e.error === 'not-allowed' || e.error === 'network' || e.error === 'service-not-allowed') { fatal = true; } };
+      sr.onend = () => { log('sr onend'); if (fatal) { log('sr FERMATO: errore fatale, niente riavvio'); listening = false; stateEl.textContent = 'Errore del riconoscimento (vedi registro).'; return; } if (listening) { try { sr.start(); log('sr riavviato'); } catch (x) { log('sr riavvio fallito ' + x.message); } } };
       sr.start();
     }
   } catch (e) { log('ERRORE start: ' + e.name + ' ' + e.message); listening = false; }
