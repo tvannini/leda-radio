@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v6)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v7)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -30,6 +30,7 @@
 // Modes (address): ?mode=sr (default) browser speech recognition (Italian); ?mode=rec records the audio (MediaRecorder) and shows its size.
 const Q = new URLSearchParams(location.search);
 const MODE = Q.get('mode') === 'rec' ? 'rec' : 'sr';
+const KEEP = Q.get('keep') === '1';   // v7: keep the microphone OPEN from 'Attiva' (to test whether a stream opened while visible survives in the background)
 const $ = (id) => document.getElementById(id);
 const ka = $('ka'), logEl = $('log'), stateEl = $('state'), textEl = $('text');
 const t0 = Date.now();
@@ -56,7 +57,7 @@ async function start() {
   log('START (' + MODE + ')');
   try {
     if (MODE === 'rec') {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       const track = stream.getAudioTracks()[0];
       log('microfono usato: ' + (track && track.label) + ' state=' + (track && track.readyState) + ' muted=' + (track && track.muted));
       track.onmute = () => log('microfono MUTO dal browser'); track.onunmute = () => log('microfono di nuovo attivo');
@@ -94,7 +95,7 @@ function stop() {
     rec.onstop = () => {
       const blob = new Blob(chunks, { type: rec.mimeType });
       log('registrazione: ' + blob.size + ' byte, ' + ((Date.now() - recStart) / 1000).toFixed(1) + ' s, tipo ' + rec.mimeType + ', chunk ' + chunks.length);
-      try { stream.getTracks().forEach((t) => t.stop()); stream = null; log('microfono rilasciato'); } catch (e) {}
+      if (!KEEP) { try { stream.getTracks().forEach((t) => t.stop()); stream = null; log('microfono rilasciato'); } catch (e) {} }
       textEl.textContent = 'Audio registrato: ' + blob.size + ' byte in ' + ((Date.now() - recStart) / 1000).toFixed(1) + ' s (' + chunks.length + ' pezzi).';
     };
     rec.stop();
@@ -120,7 +121,8 @@ $('activate').addEventListener('click', async () => {
     clearTimeout(waitTimer);
     const track = stream.getAudioTracks()[0];
     log('permesso microfono OK: ' + (track && track.label));
-    stream.getTracks().forEach((t) => t.stop()); stream = null; log('microfono rilasciato (si riapre solo al tocco)');   // v6: both modes; rec reopens it in start()
+    if (KEEP && MODE === 'rec') { log('microfono TENUTO APERTO (keep=1)'); stream.getAudioTracks()[0].onmute = () => log('microfono MUTO dal browser'); }
+    else { stream.getTracks().forEach((t) => t.stop()); stream = null; log('microfono rilasciato (si riapre solo al tocco)'); }   // v6: rec reopens it in start()
   } catch (e) { clearTimeout(waitTimer); log('permesso microfono NEGATO: ' + e.name + ' ' + e.message); }
   ka.play().then(() => log('tono OK'), (e) => log('tono ERRORE ' + e.name));
   if ('mediaSession' in navigator) {
