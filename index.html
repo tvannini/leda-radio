@@ -138,7 +138,10 @@ async function playBytes(bytes) {
     src.connect(gain); gain.connect(limiter); limiter.connect(ac.destination);
     // The long tone is paused while the voice plays and restarts when it ends (src.onended): with both playing together the voice sounded dirty
     // in the earbuds (listening test 2026-11-14, compare/earbud.html). The voice itself is audible audio, so the page stays alive meanwhile.
-    if (Q.get('pz') === '1') ka.pause();   // OPT-IN since 2026-11-14 03:50 (?pz=1): pausing the tone made each reply start with a quiet "far" voice (Tommaso); default = tone keeps playing
+    if (Q.get('pz') === '1') {                        // OPT-IN (?pz=1): pause the tone while the voice plays; ?pzd=<ms> pauses it that many ms AFTER the voice has started
+      const d = parseInt(Q.get('pzd')) || 0;
+      if (d > 0) setTimeout(() => { if (replying) ka.pause(); }, d); else ka.pause();
+    }
     src.onended = () => { ev('play-ended'); replying = false; if (!NT) ka.play().catch(() => {}); stateEl.textContent = 'In ascolto di nuove risposte.'; };
     src.start();
     stateEl.textContent = 'Leggo la risposta...';
