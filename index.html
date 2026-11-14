@@ -104,6 +104,11 @@ async function check(fromTap) {
     if (GH) lastEtag = r.headers.get('etag');
     const bytes = new Uint8Array(await r.arrayBuffer());
     const id = idOf(r, bytes);
+    if (bytes.length < 28) {                          // empty file (reply cleared at the end of the last remote session): nothing to play, remember it as "nothing yet"
+      lastId = id;
+      infoEl.textContent = 'ultimo controllo ' + new Date().toLocaleTimeString() + ' (nessuna risposta ancora)';
+      checking = false; return;
+    }
     infoEl.textContent = 'ultimo controllo ' + new Date().toLocaleTimeString() + ' (' + Math.round(performance.now() - t0) + ' ms, ' + bytes.length + ' byte)';
     if (lastId === null) { lastId = id; ev('first-id'); }          // first answer: remember it, do not replay an old reply
     else if (id !== lastId) {
