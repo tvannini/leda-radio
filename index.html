@@ -153,7 +153,7 @@ async function playBytes(bytes) {
 document.getElementById('activate').addEventListener('click', () => {
   ac = new (window.AudioContext || window.webkitAudioContext)();   // created inside the tap (Android blocks autoplay)
   ac.resume();
-  if (Q.get('kc') === '1') {                      // default since 2026-11-14 (?kc=0 turns it off): keeps the output stream open, so each reply starts at once at full volume (before, the first second was quiet and far, in the background)
+  if (Q.get('kc') === '1') {                      // OPT-IN (?kc=1) since 2026-11-14 03:50: it keeps the output stream open but did not remove the quiet start; off by default (first-tests behaviour)
     const osc = ac.createOscillator(), g = ac.createGain();
     osc.frequency.value = 40; g.gain.value = 0.002;
     osc.connect(g); g.connect(ac.destination); osc.start();
