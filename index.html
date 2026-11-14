@@ -133,6 +133,9 @@ async function playBytes(bytes) {
     limiter.threshold.value = -4;  limiter.knee.value = 0;  limiter.ratio.value = 20;
     limiter.attack.value = 0.003;  limiter.release.value = 0.1;
     src.connect(gain); gain.connect(limiter); limiter.connect(ac.destination);
+    // The long tone is paused while the voice plays and restarts when it ends (src.onended): with both playing together the voice sounded dirty
+    // in the earbuds (listening test 2026-11-14, compare/earbud.html). The voice itself is audible audio, so the page stays alive meanwhile.
+    ka.pause();
     src.onended = () => { ev('play-ended'); replying = false; ka.play().catch(() => {}); stateEl.textContent = 'In ascolto di nuove risposte.'; };
     src.start();
     stateEl.textContent = 'Leggo la risposta...';
