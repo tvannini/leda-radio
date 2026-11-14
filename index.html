@@ -128,7 +128,7 @@ async function playBytes(bytes) {
     const src = ac.createBufferSource();
     src.buffer = buf;
     const gain = ac.createGain();
-    gain.gain.value = parseFloat(Q.get('gain')) || 1.4;           // 1.4 chosen by Tommaso 2026-11-13
+    gain.gain.value = parseFloat(Q.get('gain')) || 1.0;           // 1.0 since 2026-11-14 (was 1.4: with the new file chain a page gain is not needed; ?gain= overrides)
     const limiter = ac.createDynamicsCompressor();
     limiter.threshold.value = -4;  limiter.knee.value = 0;  limiter.ratio.value = 20;
     limiter.attack.value = 0.003;  limiter.release.value = 0.1;
