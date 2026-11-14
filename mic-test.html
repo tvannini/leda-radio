@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v3)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v4)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -104,7 +104,10 @@ function stop() {
 const toggle = () => (listening ? stop() : start());
 
 $('activate').addEventListener('click', async () => {
-  ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume();
+  // v4: immediate visible feedback (v3 gave none while the microphone permission was pending, so the page looked frozen)
+  stateEl.textContent = 'Attivazione in corso... (se compare la richiesta del microfono, consenti)';
+  log('premuto Attiva');
+  try { ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); log('audio context: ' + ac.state); } catch (e) { log('ERRORE audio context: ' + e.name + ' ' + e.message); }
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     const track = stream.getAudioTracks()[0];
