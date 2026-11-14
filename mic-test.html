@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leda radio, prova microfono</title>
+<style>
+  body { font-family: sans-serif; background: #14161a; color: #e8e8e8; margin: 0; padding: 20px 16px; }
+  h1 { font-size: 1.3em; margin: 0 0 12px; text-align: center; }
+  button { display: block; width: 100%; max-width: 420px; margin: 10px auto; padding: 18px; font-size: 1.15em; border: 0; border-radius: 12px; background: #3b82f6; color: #fff; }
+  button.secondary { background: #374151; font-size: 1em; padding: 12px; }
+  #state { text-align: center; margin: 14px 0; font-size: 1.1em; }
+  #text { background: #1f2937; border-radius: 10px; padding: 12px; min-height: 3em; margin: 12px 0; font-size: 1.05em; white-space: pre-wrap; }
+  #log { font: .78em/1.4 monospace; color: #9ca3af; white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+<h1>Prova microfono con il tasto dell'auricolare</h1>
+<button id="activate">Attiva</button>
+<div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
+<button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
+<div id="text"></div>
+<div id="log"></div>
+<audio id="ka" src="silence-tone-30s.wav" loop></audio>
+
+<script>
+// MICROPHONE FEASIBILITY TEST (2026-11-14). Nothing is sent anywhere: audio and text stay in this page and are shown on screen.
+// One earbud press ("pause" media action) toggles: 1st press = start listening, 2nd press = stop ("send": here only shown). Short beeps tell which.
+// Modes (address): ?mode=sr (default) browser speech recognition (Italian); ?mode=rec records the audio (MediaRecorder) and shows its size.
+const Q = new URLSearchParams(location.search);
+const MODE = Q.get('mode') === 'rec' ? 'rec' : 'sr';
+const $ = (id) => document.getElementById(id);
+const ka = $('ka'), logEl = $('log'), stateEl = $('state'), textEl = $('text');
+const t0 = Date.now();
+function log(m) { const s = ((Date.now() - t0) / 1000).toFixed(1).padStart(6) + ' s [' + document.visibilityState + '] ' + m; logEl.textContent = s + '\n' + logEl.textContent; }
+let ac = null, stream = null, listening = false, active = false;
+let rec = null, chunks = [], chunkLog = 0, recStart = 0;       // rec mode
+let sr = null, finalText = '', interim = '';                  // sr mode
+
+function beep(times) {                                         // audible feedback in the earbud (screen is usually off)
+  if (!ac) return;
+  for (let i = 0; i < times; i++) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.value = 880; g.gain.value = 0.25;
+    o.connect(g); g.connect(ac.destination);
+    const t = ac.currentTime + i * 0.25; o.start(t); o.stop(t + 0.12);
+  }
+}
+
+async function start() {
+  if (listening) return;
+  listening = true; finalText = ''; interim = ''; textEl.textContent = '';
+  stateEl.textContent = 'Registro... (premi di nuovo per fermare)';
+  beep(1);
+  log('START (' + MODE + ')');
+  try {
+    if (MODE === 'rec') {
+      const track = stream.getAudioTracks()[0];
+      log('microfono usato: ' + (track && track.label) + ' state=' + (track && track.readyState) + ' muted=' + (track && track.muted));
+      rec = new MediaRecorder(stream); chunks = []; chunkLog = 0; recStart = Date.now();
+      rec.ondataavailable = (e) => { chunks.push(e.data); if (chunkLog++ < 5) log('chunk ' + e.data.size + ' byte'); };
+      rec.start(1000);
+    } else {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { log('riconoscimento vocale NON disponibile'); listening = false; return; }
+      sr = new SR(); sr.lang = 'it-IT'; sr.continuous = true; sr.interimResults = true;
+      sr.onstart = () => log('sr onstart');
+      sr.onaudiostart = () => log('sr audiostart');
+      sr.onresult = (e) => {
+        interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) finalText += r[0].transcript + ' '; else interim += r[0].transcript;
+        }
+        textEl.textContent = finalText + interim;
+      };
+      sr.onerror = (e) => log('sr ERRORE ' + e.error);
+      sr.onend = () => { log('sr onend'); if (listening) { try { sr.start(); log('sr riavviato'); } catch (x) { log('sr riavvio fallito ' + x.message); } } };
+      sr.start();
+    }
+  } catch (e) { log('ERRORE start: ' + e.name + ' ' + e.message); listening = false; }
+}
+
+function stop() {
+  if (!listening) return;
+  listening = false;
+  beep(2);
+  stateEl.textContent = 'Fermato. Risultato qui sotto.';
+  log('STOP');
+  if (MODE === 'rec' && rec) {
+    rec.onstop = () => {
+      const blob = new Blob(chunks, { type: rec.mimeType });
+      log('registrazione: ' + blob.size + ' byte, ' + ((Date.now() - recStart) / 1000).toFixed(1) + ' s, tipo ' + rec.mimeType + ', chunk ' + chunks.length);
+      textEl.textContent = 'Audio registrato: ' + blob.size + ' byte in ' + ((Date.now() - recStart) / 1000).toFixed(1) + ' s (' + chunks.length + ' pezzi).';
+    };
+    rec.stop();
+  } else if (sr) {
+    try { sr.stop(); } catch (e) {}
+    setTimeout(() => { log('testo finale: "' + (finalText + interim).trim() + '"'); textEl.textContent = (finalText + interim).trim() || '(nessun testo riconosciuto)'; }, 1500);
+  }
+}
+const toggle = () => (listening ? stop() : start());
+
+$('activate').addEventListener('click', async () => {
+  ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    const track = stream.getAudioTracks()[0];
+    log('permesso microfono OK: ' + (track && track.label));
+    if (MODE === 'sr') { stream.getTracks().forEach((t) => t.stop()); stream = null; }   // recognition opens the microphone by itself
+  } catch (e) { log('permesso microfono NEGATO: ' + e.name); }
+  ka.play().then(() => log('tono OK'), (e) => log('tono ERRORE ' + e.name));
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova microfono', artist: 'Leda radio' });
+    navigator.mediaSession.playbackState = 'playing';
+    navigator.mediaSession.setActionHandler('play',  () => { log('tasto: play');  toggle(); ka.play().catch(() => {}); });
+    navigator.mediaSession.setActionHandler('pause', () => { log('tasto: pause'); toggle(); ka.play().catch(() => {}); });
+  }
+  active = true;
+  $('activate').hidden = true; $('manual').hidden = false;
+  stateEl.textContent = 'Pronto (' + MODE + '). Premi il tasto dell\'auricolare una volta per iniziare, di nuovo per fermare.';
+});
+$('manual').addEventListener('click', toggle);
+document.addEventListener('visibilitychange', () => log('visibilita: ' + document.visibilityState));
+ka.addEventListener('pause', () => { if (active) ka.play().catch(() => {}); });
+</script>
+</body>
+</html>
