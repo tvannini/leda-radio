@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leda radio relay</title>
+<style>
+  body { font-family: sans-serif; background: #14161a; color: #e8e8e8; margin: 0; padding: 24px 16px; text-align: center; }
+  h1 { font-size: 1.4em; margin: 0 0 24px; }
+  button { font-size: 1.3em; padding: 18px 28px; border: 0; border-radius: 12px; background: #3b82f6; color: #fff; margin: 8px; }
+  button.secondary { background: #374151; font-size: 1em; padding: 12px 20px; }
+  #state { margin: 24px 0; min-height: 3em; color: #9ca3af; }
+  #info { font-size: .8em; color: #6b7280; }
+</style>
+</head>
+<body>
+<h1>Leda radio (relay)</h1>
+<button id="activate">Attiva</button>
+<div id="state">Premi "Attiva" per ascoltare le mie risposte.</div>
+<button id="replay" class="secondary" hidden>Riascolta l'ultima</button>
+<button id="stop" class="secondary" hidden>Ferma</button>
+<div id="info"></div>
+<!-- Keep-alive: audible 40 Hz tone in loop (not silence: Chrome treats near-silence as "not audible" and freezes the hidden page after 5 minutes). -->
+<audio id="keepalive" src="silence-tone-30s.wav" loop></audio>   <!-- 30 s: Chrome shows the media notification (a real media playback that Android keeps alive) only for media longer than a few seconds; the old 3 s tone was too short -->
+
+<script>
+// RELAY version of the Leda radio (tappa 1, 2026-11-13). Differences from longpoll.html (the long-polling page, previously index.html):
+//  - no long polling (a relay such as GitHub cannot hold a request open): a timer asks for the file every POLL_MS and compares its id;
+//  - the file is ENCRYPTED (AES-256-GCM, see encrypt.js): the key comes from the address fragment (#k=<64 hex>), which never goes to any server;
+//  - source of the file: ?src=<url> (default relay/data/last.bin). plain MP3 mode is chosen by itself when the browser has no Web Crypto (plain http);
+//    in plain mode the default source is last.mp3.
+//  - ?selftest=1: fetch + decrypt once, write the result in the page, play nothing (used with a headless Chrome on localhost).
+// Playback, gain and limiter are the ones confirmed on 2026-11-13 (Web Audio, gain 1.4, limiter), without the <audio> element path.
+const Q = new URLSearchParams(location.search);
+const KEYHEX = new URLSearchParams(location.hash.slice(1)).get('k') || '';
+const PLAIN = !window.crypto || !window.crypto.subtle;   // plain http (no Web Crypto): the file is a plain MP3; on https (GitHub Pages) or localhost it is encrypted
+// Two behaviours, one page (Tommaso, 2026-11-14): served from github.io (or ?gh=1) it reads the encrypted reply from the GitHub API;
+// served from the home server it reads the local files as before.
+// Secrets are NEVER in the page (it is public): they come from the address fragment, which no server receives:
+//   #k=<64 hex AES key>&t=<GitHub token, read-only, no permissions>&r=<owner/repo, optional>
+const HASH = new URLSearchParams(location.hash.slice(1));
+const TOKEN = HASH.get('t') || '';
+const GH = location.hostname.endsWith('github.io') || Q.get('gh') === '1';
+const REPO = HASH.get('r') || 'tvannini/leda-radio';
+const SRC = Q.get('src') || (GH ? 'https://api.github.com/repos/' + REPO + '/contents/last.bin?ref=reply' : PLAIN ? 'last.mp3' : 'relay/data/last.bin');
+let lastEtag = null;                              // GitHub mode: ETag of the last file seen, sent as If-None-Match (a 304 costs nothing to download)
+const POLL_MS = parseInt(Q.get('poll')) || 3000;
+const stateEl = document.getElementById('state'), infoEl = document.getElementById('info');
+const ka = document.getElementById('keepalive');
+// Diagnostics for the PC server log (on during the tests, ?ev=0 turns them off): events are sent as GET ev/<text>; a 404 is fine.
+function ev(t) { if (GH || Q.get('ev') === '0') return; fetch('ev/' + encodeURIComponent(t) + '?t=' + Date.now()).catch(() => {}); }
+
+let ac = null, active = false, lastId = null, replying = false, lastBytes = null, timer = null, checking = false;
+let key = null;                                   // CryptoKey, imported once
+
+async function getKey() {
+  if (key) return key;
+  if (!/^[0-9a-f]{64}$/i.test(KEYHEX)) throw new Error('chiave mancante nel link (#k=...)');
+  const raw = new Uint8Array(KEYHEX.match(/../g).map(h => parseInt(h, 16)));
+  key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+  return key;
+}
+// file bytes -> MP3 bytes (plain mode: as they are)
+async function decode(bytes) {
+  if (PLAIN) return bytes;
+  const iv = bytes.subarray(0, 12);               // 12-byte IV first, then ciphertext + 16-byte tag (what Web Crypto expects)
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await getKey(), bytes.subarray(12)));
+}
+// id of a reply: ETag (GitHub), else Last-Modified, else a hash of the content
+function idOf(resp, bytes) {
+  const h = resp.headers.get('etag') || resp.headers.get('last-modified');
+  if (h) return h;
+  let x = 2166136261;                                // no header: length + FNV-1a hash of all bytes (the first bytes of two MP3 files can be identical)
+  for (let i = 0; i < bytes.length; i++) { x ^= bytes[i]; x = Math.imul(x, 16777619); }
+  return bytes.length + ':' + (x >>> 0);
+}
+
+// One check: download the file (cache off), and if its id is new, decrypt and play it.
+async function check(fromTap) {
+  if (checking) return;
+  checking = true;
+  const t0 = performance.now();
+  try {
+    const ctl = new AbortController();
+    const abort = setTimeout(() => ctl.abort(), 20000);
+    let url = SRC, headers = {};
+    if (GH) {
+      headers['Accept'] = 'application/vnd.github.raw';
+      if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+      if (lastEtag) headers['If-None-Match'] = lastEtag;
+    } else url = SRC + (SRC.includes('?') ? '&' : '?') + 't=' + Date.now();
+    const r = await fetch(url, { cache: 'no-store', headers, signal: ctl.signal });
+    clearTimeout(abort);
+    if (r.status === 304) { infoEl.textContent = 'ultimo controllo ' + new Date().toLocaleTimeString() + ' (nessuna novità)'; checking = false; return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (GH) lastEtag = r.headers.get('etag');
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const id = idOf(r, bytes);
+    infoEl.textContent = 'ultimo controllo ' + new Date().toLocaleTimeString() + ' (' + Math.round(performance.now() - t0) + ' ms, ' + bytes.length + ' byte)';
+    if (lastId === null) { lastId = id; ev('first-id'); }          // first answer: remember it, do not replay an old reply
+    else if (id !== lastId) {
+      lastId = id;
+      ev('new-reply ' + document.visibilityState);
+      lastBytes = await decode(bytes);
+      ev('decrypted ' + lastBytes.length);
+      await playBytes(lastBytes);
+    }
+  } catch (e) {
+    ev('check-error ' + e.name + ' ' + e.message);
+    stateEl.textContent = 'Errore: ' + e.message + ' (riprovo)';
+  }
+  checking = false;
+}
+// Polling inside a dedicated Web Worker (test 2026-11-13, after the main-thread timer froze 3-4 s after the page went hidden):
+// the worker runs its own timer and its own fetch; only a NEW file is handed to the page (which decrypts and plays it).
+// Worker code is built from a string so that the page stays one single file.
+function schedule() {
+  clearTimeout(timer);
+  if (!active) return;
+  timer = setTimeout(async () => { await check(); schedule(); }, POLL_MS);
+}
+
+async function playBytes(bytes) {
+  try {
+    replying = true;
+    await ac.resume();
+    const buf = await ac.decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    const gain = ac.createGain();
+    gain.gain.value = parseFloat(Q.get('gain')) || 1.4;           // 1.4 chosen by Tommaso 2026-11-13
+    const limiter = ac.createDynamicsCompressor();
+    limiter.threshold.value = -4;  limiter.knee.value = 0;  limiter.ratio.value = 20;
+    limiter.attack.value = 0.003;  limiter.release.value = 0.1;
+    src.connect(gain); gain.connect(limiter); limiter.connect(ac.destination);
+    src.onended = () => { ev('play-ended'); replying = false; ka.play().catch(() => {}); stateEl.textContent = 'In ascolto di nuove risposte.'; };
+    src.start();
+    stateEl.textContent = 'Leggo la risposta...';
+    ev('play-ok');
+  } catch (e) {
+    replying = false; ka.play().catch(() => {});
+    ev('play-ERR ' + e.name);
+    stateEl.textContent = 'Il browser ha bloccato l\'audio: premi "Riascolta l\'ultima".';
+  }
+}
+
+document.getElementById('activate').addEventListener('click', () => {
+  ac = new (window.AudioContext || window.webkitAudioContext)();   // created inside the tap (Android blocks autoplay)
+  ac.resume();
+  ka.play().then(() => ev('ka-play-ok'), (e) => ev('ka-play-ERR ' + e.name));
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Leda radio', artist: 'In ascolto' });
+    navigator.mediaSession.playbackState = 'playing';
+    // handlers make the session a complete one (play/pause); the tone restarts by itself, so they do nothing special
+    navigator.mediaSession.setActionHandler('play', () => ka.play().catch(() => {}));
+    navigator.mediaSession.setActionHandler('pause', () => ka.play().catch(() => {}));
+  }
+  active = true;
+  document.getElementById('activate').hidden = true;
+  document.getElementById('replay').hidden = false;
+  document.getElementById('stop').hidden = false;
+  stateEl.textContent = 'In ascolto di nuove risposte.';
+  check().then(schedule);
+});
+ka.addEventListener('playing', () => ev('ka-playing ' + document.visibilityState));
+ka.addEventListener('error', () => ev('ka-error ' + (ka.error && ka.error.code)));
+// heartbeat every 10 s: tells whether the timers run while hidden and whether the tone is really playing (diagnostics of 2026-11-13)
+setInterval(() => { if (active) ev('hb ' + document.visibilityState + ' ka.paused=' + ka.paused + ' t=' + ka.currentTime.toFixed(1) + ' ac=' + (ac && ac.state)); }, 10000);
+ka.addEventListener('pause', () => { if (replying) return; ev('keepalive-PAUSED ' + document.visibilityState); ka.play().then(() => ev('keepalive-resumed'), () => {}); });
+document.addEventListener('visibilitychange', () => { ev('visibility ' + document.visibilityState); if (active && document.visibilityState === 'visible') check(); });
+document.getElementById('replay').addEventListener('click', () => { if (lastBytes) playBytes(lastBytes); });
+document.getElementById('stop').addEventListener('click', () => { active = false; clearTimeout(timer); ka.pause(); stateEl.textContent = 'Fermata (ricarica la pagina per riattivare).'; });
+
+// Selftest for a headless browser: fetch + decrypt once and write the result (no audio).
+if (Q.get('selftest') === '1') {
+  (async () => {
+    const out = document.createElement('pre'); out.id = 'selftest'; document.body.appendChild(out);
+    try {
+      const r = await fetch(GH ? SRC : SRC + '?t=' + Date.now(), { cache: 'no-store', headers: GH ? { 'Accept': 'application/vnd.github.raw' } : {} });
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      const mp3 = await decode(bytes);
+      const head = Array.from(mp3.subarray(0, 3)).map(b => String.fromCharCode(b)).join('');
+      out.textContent = 'SELFTEST OK secure=' + window.isSecureContext + ' file=' + bytes.length + ' mp3=' + mp3.length + ' head=' + head + ' etag=' + r.headers.get('etag') + ' lm=' + r.headers.get('last-modified');
+    } catch (e) { out.textContent = 'SELFTEST FAILED ' + e.name + ': ' + e.message; }
+  })();
+}
+</script>
+</body>
+</html>
