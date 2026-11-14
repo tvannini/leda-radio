@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v4)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v5)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -108,12 +108,18 @@ $('activate').addEventListener('click', async () => {
   stateEl.textContent = 'Attivazione in corso... (se compare la richiesta del microfono, consenti)';
   log('premuto Attiva');
   try { ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); log('audio context: ' + ac.state); } catch (e) { log('ERRORE audio context: ' + e.name + ' ' + e.message); }
+  // v5: diagnostics. State of the microphone permission, number of audio inputs, and a timer that says so if the browser never answers.
+  try { const ps = await navigator.permissions.query({ name: 'microphone' }); log('stato permesso microfono: ' + ps.state); } catch (e) { log('stato permesso non leggibile: ' + e.name); }
+  try { const dv = await navigator.mediaDevices.enumerateDevices(); log('ingressi audio visti: ' + dv.filter((d) => d.kind === 'audioinput').length); } catch (e) { log('elenco dispositivi ERRORE: ' + e.name); }
+  log('chiedo il microfono (getUserMedia)...');
+  const waitTimer = setTimeout(() => { log('ATTENZIONE: il browser non risponde da 8 s alla richiesta del microfono'); stateEl.textContent = 'Il browser non risponde alla richiesta del microfono (vedi registro).'; }, 8000);
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    clearTimeout(waitTimer);
     const track = stream.getAudioTracks()[0];
     log('permesso microfono OK: ' + (track && track.label));
     if (MODE === 'sr') { stream.getTracks().forEach((t) => t.stop()); stream = null; }   // recognition opens the microphone by itself
-  } catch (e) { log('permesso microfono NEGATO: ' + e.name); }
+  } catch (e) { clearTimeout(waitTimer); log('permesso microfono NEGATO: ' + e.name + ' ' + e.message); }
   ka.play().then(() => log('tono OK'), (e) => log('tono ERRORE ' + e.name));
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova microfono', artist: 'Leda radio' });
