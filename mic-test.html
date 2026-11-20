@@ -15,10 +15,11 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v7)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v8)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
+<div id="devices"></div>
 <button id="copy" class="secondary">Copia il registro (poi incollalo nella chat)</button>
 <div id="text"></div>
 <div id="log"></div>
@@ -29,7 +30,7 @@
 // One earbud press ("pause" media action) toggles: 1st press = start listening, 2nd press = stop ("send": here only shown). Short beeps tell which.
 // Modes (address): ?mode=sr (default) browser speech recognition (Italian); ?mode=rec records the audio (MediaRecorder) and shows its size.
 const Q = new URLSearchParams(location.search);
-const MODE = Q.get('mode') === 'rec' ? 'rec' : 'sr';
+const MODE = ['rec', 'probe'].includes(Q.get('mode')) ? Q.get('mode') : 'sr';   // v8: 'probe' = does the earbud tap arrive while the microphone is open?
 const KEEP = Q.get('keep') === '1';   // v7: keep the microphone OPEN from 'Attiva' (to test whether a stream opened while visible survives in the background)
 const $ = (id) => document.getElementById(id);
 const ka = $('ka'), logEl = $('log'), stateEl = $('state'), textEl = $('text');
@@ -106,7 +107,81 @@ function stop() {
 }
 const toggle = () => (listening ? stop() : start());
 
+// ---------------------------------------------------------------------------------------------------------------
+// v8 PROBE MODE (?mode=probe), 2026-11-20. Question to settle: when the microphone is OPEN, do the earbud taps still reach the page?
+// The v7 verdict ("with the microphone open nothing arrives") was weak, for three reasons:
+//   1. a single trial;
+//   2. in v7 the microphone was opened BEFORE the tone and the media session were started, and the result of the tone was never
+//      looked at: if the tone had not started there was no active media player, so no taps could arrive, and the cause would be
+//      the page, not the earbud;
+//   3. it was not recorded which microphone was in use (the earbud's own or the phone's).
+// Here: (a) tone + media session are started FIRST and their state is logged every 5 s; (b) the microphone is opened later, by hand,
+// choosing the input from the list (earbud / phone / none = control); (c) EVERYTHING that reaches the page is logged: media actions,
+// keyboard keys (media buttons can also arrive as keys), tone events, page lifecycle (hidden / freeze / resume); (d) taps are only
+// counted and beeped, nothing is recorded: the goal is only to see whether they arrive.
+let probeStream = null, probeTaps = 0;
+function probeStatus() {                                       // one line on screen: taps received so far and which microphone is open
+  const track = probeStream && probeStream.getAudioTracks()[0];
+  stateEl.textContent = 'Tocchi ricevuti: ' + probeTaps + '  |  microfono: ' + (track ? track.label : 'CHIUSO');
+}
+function probeTap(what) { probeTaps++; log('TOCCO #' + probeTaps + ' = ' + what); beep(1); probeStatus(); }
+function probeCloseMic() {
+  if (!probeStream) return;
+  probeStream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+  probeStream = null; log('MICROFONO CHIUSO'); probeStatus();
+}
+async function probeOpenMic(deviceId, label) {
+  probeCloseMic();
+  try {
+    probeStream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true });
+    const track = probeStream.getAudioTracks()[0];
+    track.onmute = () => log('microfono MUTO dal browser'); track.onunmute = () => log('microfono di nuovo attivo');
+    track.onended = () => log('microfono TERMINATO dal sistema');
+    log('MICROFONO APERTO: ' + track.label + ' (scelto: ' + label + ') state=' + track.readyState + ' muted=' + track.muted);
+  } catch (e) { log('microfono NON aperto: ' + e.name + ' ' + e.message); }
+  probeStatus();
+}
+async function activateProbe() {
+  stateEl.textContent = 'Attivazione in corso...';
+  log('premuto Attiva (probe)');
+  try { ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); log('audio context: ' + ac.state); } catch (e) { log('ERRORE audio context: ' + e.name); }
+  // 1. the tone FIRST (it is what makes Chrome treat the page as an active media player), and the result is logged
+  try { await ka.play(); log('tono: AVVIATO'); } catch (e) { log('tono: ERRORE ' + e.name + ' ' + e.message); }
+  // 2. the media session, with a handler for EVERY action (so that we see which one the earbud tap produces)
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova tocchi', artist: 'Leda radio' });
+    navigator.mediaSession.playbackState = 'playing';
+    for (const act of ['play', 'pause', 'stop', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto']) {
+      try { navigator.mediaSession.setActionHandler(act, () => { probeTap('azione ' + act); ka.play().catch(() => {}); }); } catch (e) { log('azione non supportata: ' + act); }
+    }
+  } else { log('mediaSession NON disponibile'); }
+  // 3. everything else that could carry a tap or explain why none arrives
+  document.addEventListener('keydown', (e) => probeTap('tasto tastiera ' + e.key + ' (' + e.code + ')'));
+  for (const ev of ['play', 'pause', 'ended', 'stalled', 'waiting']) ka.addEventListener(ev, () => log('tono evento: ' + ev));
+  for (const ev of ['freeze', 'resume']) document.addEventListener(ev, () => log('pagina evento: ' + ev));      // Page Lifecycle: Chrome freezing the page
+  for (const ev of ['pagehide', 'pageshow']) window.addEventListener(ev, () => log('finestra evento: ' + ev));
+  // 4. microphone permission once (released at once: the stream is opened later, by hand), then one button per audio input
+  try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach((t) => t.stop()); log('permesso microfono OK (rilasciato)'); }
+  catch (e) { log('permesso microfono NEGATO: ' + e.name + ' ' + e.message); }
+  const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+  log('ingressi audio: ' + inputs.map((d) => d.label || '(senza nome)').join(' | '));
+  const box = $('devices'); box.textContent = '';
+  const addButton = (text, fn) => { const b = document.createElement('button'); b.className = 'secondary'; b.textContent = text; b.addEventListener('click', fn); box.appendChild(b); };
+  addButton('Nessun microfono (controllo)', probeCloseMic);
+  inputs.forEach((d, i) => addButton('Apri: ' + (d.label || 'ingresso ' + (i + 1)), () => probeOpenMic(d.deviceId, d.label)));
+  // 5. a heartbeat every 5 s: if the log shows gaps, the page was frozen; it also shows whether the tone and the session stayed alive
+  setInterval(() => {
+    const track = probeStream && probeStream.getAudioTracks()[0];
+    log('cuore: tono=' + (ka.paused ? 'FERMO' : 'in corso') + ' t=' + ka.currentTime.toFixed(1) + ' sessione=' + (navigator.mediaSession && navigator.mediaSession.playbackState) +
+        ' mic=' + (track ? track.readyState + (track.muted ? ' MUTO' : '') : 'chiuso') + ' tocchi=' + probeTaps);
+  }, 5000);
+  active = true;
+  $('activate').hidden = true;
+  probeStatus();
+}
+
 $('activate').addEventListener('click', async () => {
+  if (MODE === 'probe') { await activateProbe(); return; }
   // v4: immediate visible feedback (v3 gave none while the microphone permission was pending, so the page looked frozen)
   stateEl.textContent = 'Attivazione in corso... (se compare la richiesta del microfono, consenti)';
   log('premuto Attiva');
