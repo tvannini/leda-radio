@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v9)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v10)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -131,17 +131,25 @@ function probeCloseMic() {
   probeStream = null; log('MICROFONO CHIUSO'); probeStatus();
 }
 let probeBusy = false;   // v9: v8 trial 2 showed several quick presses on 'Apri' racing each other (open / close / open / OverconstrainedError)
+// v10: 'raw' = open the microphone WITHOUT echo cancellation, noise suppression and automatic gain. Hypothesis to test: with these
+// on (the default) Chrome records through the Android 'voice communication' source, which puts the phone in communication mode and
+// may change who receives the earbud button; with them off it should use the plain microphone source and leave the audio mode alone.
+let probeRaw = false, probeOpenRaw = false;
 async function probeOpenMic(deviceId, label) {
   if (probeBusy) { log('premuto mentre un\'apertura e\' in corso: IGNORATO'); return; }
-  if (probeStream && probeStream.getAudioTracks()[0].label === label) { log('quel microfono e\' GIA\' aperto: ignorato (ora fai i tocchi)'); return; }
+  if (probeStream && probeStream.getAudioTracks()[0].label === label && probeOpenRaw === probeRaw) { log('quel microfono e\' GIA\' aperto cosi\': ignorato (ora fai i tocchi)'); return; }
   probeBusy = true;
   probeCloseMic();
   try {
     // v9: the deviceId of a Bluetooth input can change after the route switch (v8 trial 2: OverconstrainedError), so look it up again by label
     let id = deviceId;
     try { const now = (await navigator.mediaDevices.enumerateDevices()).find((d) => d.kind === 'audioinput' && d.label === label); if (now) id = now.deviceId; } catch (e) {}
-    probeStream = await navigator.mediaDevices.getUserMedia({ audio: id ? { deviceId: { exact: id } } : true });
+    const audio = probeRaw ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : {};
+    if (id) audio.deviceId = { exact: id };
+    probeStream = await navigator.mediaDevices.getUserMedia({ audio: Object.keys(audio).length ? audio : true });
+    probeOpenRaw = probeRaw;
     const track = probeStream.getAudioTracks()[0];
+    log('impostazioni reali del microfono: ' + JSON.stringify(track.getSettings()));   // shows what the browser really applied (echoCancellation etc.)
     track.onmute = () => log('microfono MUTO dal browser'); track.onunmute = () => log('microfono di nuovo attivo');
     track.onended = () => log('microfono TERMINATO dal sistema');
     log('MICROFONO APERTO: ' + track.label + ' (scelto: ' + label + ') state=' + track.readyState + ' muted=' + track.muted + '  --> ORA fai i tocchi');
@@ -174,7 +182,12 @@ async function activateProbe() {
   const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
   log('ingressi audio: ' + inputs.map((d) => d.label || '(senza nome)').join(' | '));
   const box = $('devices'); box.textContent = '';
-  const addButton = (text, fn) => { const b = document.createElement('button'); b.className = 'secondary'; b.textContent = text; b.addEventListener('click', fn); box.appendChild(b); };
+  const addButton = (text, fn) => { const b = document.createElement('button'); b.className = 'secondary'; b.textContent = text; b.addEventListener('click', fn); box.appendChild(b); return b; };
+  const rawButton = addButton('Elaborazione audio: ATTIVA (premi per spegnerla)', () => {   // v10: switch echo/noise/gain processing off for the NEXT opens
+    probeRaw = !probeRaw;
+    rawButton.textContent = probeRaw ? 'Elaborazione audio: SPENTA (premi per riaccenderla)' : 'Elaborazione audio: ATTIVA (premi per spegnerla)';
+    log('elaborazione audio ' + (probeRaw ? 'SPENTA' : 'ATTIVA') + ' per le prossime aperture (il microfono aperto va riaperto)');
+  });
   addButton('Nessun microfono (controllo)', probeCloseMic);
   inputs.forEach((d, i) => addButton('Apri: ' + (d.label || 'ingresso ' + (i + 1)), () => probeOpenMic(d.deviceId, d.label)));
   // 5. a heartbeat every 5 s: if the log shows gaps, the page was frozen; it also shows whether the tone and the session stayed alive
