@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v8)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v9)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -130,15 +130,23 @@ function probeCloseMic() {
   probeStream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
   probeStream = null; log('MICROFONO CHIUSO'); probeStatus();
 }
+let probeBusy = false;   // v9: v8 trial 2 showed several quick presses on 'Apri' racing each other (open / close / open / OverconstrainedError)
 async function probeOpenMic(deviceId, label) {
+  if (probeBusy) { log('premuto mentre un\'apertura e\' in corso: IGNORATO'); return; }
+  if (probeStream && probeStream.getAudioTracks()[0].label === label) { log('quel microfono e\' GIA\' aperto: ignorato (ora fai i tocchi)'); return; }
+  probeBusy = true;
   probeCloseMic();
   try {
-    probeStream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true });
+    // v9: the deviceId of a Bluetooth input can change after the route switch (v8 trial 2: OverconstrainedError), so look it up again by label
+    let id = deviceId;
+    try { const now = (await navigator.mediaDevices.enumerateDevices()).find((d) => d.kind === 'audioinput' && d.label === label); if (now) id = now.deviceId; } catch (e) {}
+    probeStream = await navigator.mediaDevices.getUserMedia({ audio: id ? { deviceId: { exact: id } } : true });
     const track = probeStream.getAudioTracks()[0];
     track.onmute = () => log('microfono MUTO dal browser'); track.onunmute = () => log('microfono di nuovo attivo');
     track.onended = () => log('microfono TERMINATO dal sistema');
-    log('MICROFONO APERTO: ' + track.label + ' (scelto: ' + label + ') state=' + track.readyState + ' muted=' + track.muted);
+    log('MICROFONO APERTO: ' + track.label + ' (scelto: ' + label + ') state=' + track.readyState + ' muted=' + track.muted + '  --> ORA fai i tocchi');
   } catch (e) { log('microfono NON aperto: ' + e.name + ' ' + e.message); }
+  probeBusy = false;
   probeStatus();
 }
 async function activateProbe() {
