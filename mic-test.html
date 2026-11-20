@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v10)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v11)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -31,6 +31,19 @@
 // Modes (address): ?mode=sr (default) browser speech recognition (Italian); ?mode=rec records the audio (MediaRecorder) and shows its size.
 const Q = new URLSearchParams(location.search);
 const MODE = ['rec', 'probe'].includes(Q.get('mode')) ? Q.get('mode') : 'sr';   // v8: 'probe' = does the earbud tap arrive while the microphone is open?
+// v11 (2026-11-21): Tommaso counted my beeps: after 5-6 double taps the page answered after the 2nd, 4th, 6th only (every SECOND gesture
+// is lost, the earbud beeps every time). Hypothesis: the earbud (or the Android Bluetooth stack) keeps a play/pause state of its own and
+// sends 'pause' while the phone says 'playing'; after our pause handler the next gesture becomes a 'play' that is dropped because the session
+// is still 'playing'. So we keep the state the system sees IN STEP with the toggle. ?sync=toggle (default): 'pause' -> state 'paused',
+// 'play' -> state 'playing' (the tone keeps playing, only the REPORTED state changes). ?sync=flap: after a 'pause' report 'paused' for 300 ms,
+// then 'playing' again. ?sync=none: v10 behaviour (reference).
+const SYNC = Q.get('sync') || 'toggle';
+function syncState(act) {
+  if (!('mediaSession' in navigator) || SYNC === 'none') return;
+  const ms = navigator.mediaSession;
+  if (SYNC === 'flap') { if (act === 'pause') { ms.playbackState = 'paused'; setTimeout(() => { ms.playbackState = 'playing'; }, 300); } return; }
+  if (act === 'pause') ms.playbackState = 'paused'; else if (act === 'play') ms.playbackState = 'playing';
+}
 const KEEP = Q.get('keep') === '1';   // v7: keep the microphone OPEN from 'Attiva' (to test whether a stream opened while visible survives in the background)
 const $ = (id) => document.getElementById(id);
 const ka = $('ka'), logEl = $('log'), stateEl = $('state'), textEl = $('text');
@@ -159,7 +172,7 @@ async function probeOpenMic(deviceId, label) {
 }
 async function activateProbe() {
   stateEl.textContent = 'Attivazione in corso...';
-  log('premuto Attiva (probe)');
+  log('premuto Attiva (probe) sync=' + SYNC);
   try { ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); log('audio context: ' + ac.state); } catch (e) { log('ERRORE audio context: ' + e.name); }
   // 1. the tone FIRST (it is what makes Chrome treat the page as an active media player), and the result is logged
   try { await ka.play(); log('tono: AVVIATO'); } catch (e) { log('tono: ERRORE ' + e.name + ' ' + e.message); }
@@ -168,7 +181,7 @@ async function activateProbe() {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova tocchi', artist: 'Leda radio' });
     navigator.mediaSession.playbackState = 'playing';
     for (const act of ['play', 'pause', 'stop', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto']) {
-      try { navigator.mediaSession.setActionHandler(act, () => { probeTap('azione ' + act); ka.play().catch(() => {}); }); } catch (e) { log('azione non supportata: ' + act); }
+      try { navigator.mediaSession.setActionHandler(act, () => { probeTap('azione ' + act); syncState(act); ka.play().catch(() => {}); }); } catch (e) { log('azione non supportata: ' + act); }
     }
   } else { log('mediaSession NON disponibile'); }
   // 3. everything else that could carry a tap or explain why none arrives
@@ -205,7 +218,7 @@ $('activate').addEventListener('click', async () => {
   if (MODE === 'probe') { await activateProbe(); return; }
   // v4: immediate visible feedback (v3 gave none while the microphone permission was pending, so the page looked frozen)
   stateEl.textContent = 'Attivazione in corso... (se compare la richiesta del microfono, consenti)';
-  log('premuto Attiva');
+  log('premuto Attiva sync=' + SYNC + (KEEP ? ' keep=1' : ''));
   try { ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); log('audio context: ' + ac.state); } catch (e) { log('ERRORE audio context: ' + e.name + ' ' + e.message); }
   // v5: diagnostics. State of the microphone permission, number of audio inputs, and a timer that says so if the browser never answers.
   try { const ps = await navigator.permissions.query({ name: 'microphone' }); log('stato permesso microfono: ' + ps.state); } catch (e) { log('stato permesso non leggibile: ' + e.name); }
@@ -224,8 +237,8 @@ $('activate').addEventListener('click', async () => {
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova microfono', artist: 'Leda radio' });
     navigator.mediaSession.playbackState = 'playing';
-    navigator.mediaSession.setActionHandler('play',  () => { log('tasto: play');  toggle(); ka.play().catch(() => {}); });
-    navigator.mediaSession.setActionHandler('pause', () => { log('tasto: pause'); toggle(); ka.play().catch(() => {}); });
+    navigator.mediaSession.setActionHandler('play',  () => { log('tasto: play');  syncState('play');  toggle(); ka.play().catch(() => {}); });
+    navigator.mediaSession.setActionHandler('pause', () => { log('tasto: pause'); syncState('pause'); toggle(); ka.play().catch(() => {}); });
     for (const act of ['nexttrack', 'previoustrack', 'stop']) {
       try { navigator.mediaSession.setActionHandler(act, () => { log('tasto: ' + act); toggle(); }); } catch (e) { log('azione non supportata: ' + act); }
     }
