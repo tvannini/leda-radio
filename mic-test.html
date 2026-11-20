@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v13)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v14)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -259,6 +259,11 @@ $('activate').addEventListener('click', async () => {
     else { stream.getTracks().forEach((t) => t.stop()); stream = null; log('microfono rilasciato (si riapre solo al tocco)'); }   // v6: rec reopens it in start()
   } catch (e) { clearTimeout(waitTimer); log('permesso microfono NEGATO: ' + e.name + ' ' + e.message); }
   ka.play().then(() => log('tono OK'), (e) => log('tono ERRORE ' + e.name));
+  // v14: keep the screen ON while the page is visible (needed for the Web Speech fallback, which dies when the page is hidden). The lock is
+  // released by the browser every time the page is hidden, so it is requested again when the page becomes visible.
+  const takeWakeLock = () => { if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then(() => log('schermo tenuto acceso (wake lock)'), (e) => log('wake lock ERRORE ' + e.name)); };
+  takeWakeLock();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') takeWakeLock(); });
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova microfono', artist: 'Leda radio' });
     navigator.mediaSession.playbackState = 'playing';
