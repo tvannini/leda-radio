@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v11)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v12)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -44,6 +44,19 @@ function syncState(act) {
   if (SYNC === 'flap') { if (act === 'pause') { ms.playbackState = 'paused'; setTimeout(() => { ms.playbackState = 'playing'; }, 300); } return; }
   if (act === 'pause') ms.playbackState = 'paused'; else if (act === 'play') ms.playbackState = 'playing';
 }
+// v12 (2026-11-21): ?mic=Speakerphone (or Bluetooth, Headset...) opens THAT input in the sr/rec modes instead of the default one. Reason: the
+// trial of 'rec keep' with the default input ('Predefinito') got NO taps with the screen off, while the probe page with 'Speakerphone' got 3;
+// when the earbuds are connected the default input is probably the earbud's Bluetooth microphone (call mode), which would block the taps.
+const MIC = Q.get('mic');
+async function micStream() {
+  const base = { echoCancellation: true, noiseSuppression: true };
+  if (MIC) {
+    const d = (await navigator.mediaDevices.enumerateDevices()).find((x) => x.kind === 'audioinput' && x.label.toLowerCase().includes(MIC.toLowerCase()));
+    if (d) { log('microfono scelto dall\'indirizzo: ' + d.label); return navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: d.deviceId } } }); }
+    log('microfono "' + MIC + '" NON trovato: uso il predefinito');
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: base });
+}
 const KEEP = Q.get('keep') === '1';   // v7: keep the microphone OPEN from 'Attiva' (to test whether a stream opened while visible survives in the background)
 const $ = (id) => document.getElementById(id);
 const ka = $('ka'), logEl = $('log'), stateEl = $('state'), textEl = $('text');
@@ -71,7 +84,7 @@ async function start() {
   log('START (' + MODE + ')');
   try {
     if (MODE === 'rec') {
-      if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      if (!stream) stream = await micStream();
       const track = stream.getAudioTracks()[0];
       log('microfono usato: ' + (track && track.label) + ' state=' + (track && track.readyState) + ' muted=' + (track && track.muted));
       track.onmute = () => log('microfono MUTO dal browser'); track.onunmute = () => log('microfono di nuovo attivo');
@@ -226,7 +239,7 @@ $('activate').addEventListener('click', async () => {
   log('chiedo il microfono (getUserMedia)...');
   const waitTimer = setTimeout(() => { log('ATTENZIONE: il browser non risponde da 8 s alla richiesta del microfono'); stateEl.textContent = 'Il browser non risponde alla richiesta del microfono (vedi registro).'; }, 8000);
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    stream = await micStream();
     clearTimeout(waitTimer);
     const track = stream.getAudioTracks()[0];
     log('permesso microfono OK: ' + (track && track.label));
