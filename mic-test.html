@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v12)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v13)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -38,9 +38,19 @@ const MODE = ['rec', 'probe'].includes(Q.get('mode')) ? Q.get('mode') : 'sr';   
 // 'play' -> state 'playing' (the tone keeps playing, only the REPORTED state changes). ?sync=flap: after a 'pause' report 'paused' for 300 ms,
 // then 'playing' again. ?sync=none: v10 behaviour (reference).
 const SYNC = Q.get('sync') || 'toggle';
+let realPaused = false;                                       // v13: true while the tone is paused ON PURPOSE by a 'pause' action (sync=real)
+function keepPlaying() { if (!(SYNC === 'real' && realPaused)) ka.play().catch(() => {}); }   // the old 'ka.play() after every action', except while paused on purpose
 function syncState(act) {
   if (!('mediaSession' in navigator) || SYNC === 'none') return;
   const ms = navigator.mediaSession;
+  // v13 ?sync=real: behave like a REAL player. Trial 9 showed that after a 'pause' with the reported state 'paused' the next delivered event was
+  // 'pause' again: Chrome ignores the reported state while the tone element is playing. So on 'pause' we really PAUSE the tone and on 'play' we
+  // resume it (the earbud's own toggle then stays in step). The tone is silent: a short pause should not freeze the page.
+  if (SYNC === 'real') {
+    if (act === 'pause') { realPaused = true; ka.pause(); ms.playbackState = 'paused'; }
+    else if (act === 'play') { realPaused = false; ka.play().catch(() => {}); ms.playbackState = 'playing'; }
+    return;
+  }
   if (SYNC === 'flap') { if (act === 'pause') { ms.playbackState = 'paused'; setTimeout(() => { ms.playbackState = 'playing'; }, 300); } return; }
   if (act === 'pause') ms.playbackState = 'paused'; else if (act === 'play') ms.playbackState = 'playing';
 }
@@ -124,6 +134,8 @@ function stop() {
       log('registrazione: ' + blob.size + ' byte, ' + ((Date.now() - recStart) / 1000).toFixed(1) + ' s, tipo ' + rec.mimeType + ', chunk ' + chunks.length);
       if (!KEEP) { try { stream.getTracks().forEach((t) => t.stop()); stream = null; log('microfono rilasciato'); } catch (e) {} }
       textEl.textContent = 'Audio registrato: ' + blob.size + ' byte in ' + ((Date.now() - recStart) / 1000).toFixed(1) + ' s (' + chunks.length + ' pezzi).';
+      // v13: a player under the text, to LISTEN to the recording afterwards (quality with the phone in the pocket)
+      try { const player = document.createElement('audio'); player.controls = true; player.src = URL.createObjectURL(blob); player.style.width = '100%'; textEl.appendChild(player); } catch (e) { log('player non creato: ' + e.name); }
     };
     rec.stop();
   } else if (sr) {
@@ -194,7 +206,7 @@ async function activateProbe() {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova tocchi', artist: 'Leda radio' });
     navigator.mediaSession.playbackState = 'playing';
     for (const act of ['play', 'pause', 'stop', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto']) {
-      try { navigator.mediaSession.setActionHandler(act, () => { probeTap('azione ' + act); syncState(act); ka.play().catch(() => {}); }); } catch (e) { log('azione non supportata: ' + act); }
+      try { navigator.mediaSession.setActionHandler(act, () => { probeTap('azione ' + act); syncState(act); keepPlaying(); }); } catch (e) { log('azione non supportata: ' + act); }
     }
   } else { log('mediaSession NON disponibile'); }
   // 3. everything else that could carry a tap or explain why none arrives
@@ -250,8 +262,8 @@ $('activate').addEventListener('click', async () => {
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova microfono', artist: 'Leda radio' });
     navigator.mediaSession.playbackState = 'playing';
-    navigator.mediaSession.setActionHandler('play',  () => { log('tasto: play');  syncState('play');  toggle(); ka.play().catch(() => {}); });
-    navigator.mediaSession.setActionHandler('pause', () => { log('tasto: pause'); syncState('pause'); toggle(); ka.play().catch(() => {}); });
+    navigator.mediaSession.setActionHandler('play',  () => { log('tasto: play');  syncState('play');  toggle(); keepPlaying(); });
+    navigator.mediaSession.setActionHandler('pause', () => { log('tasto: pause'); syncState('pause'); toggle(); keepPlaying(); });
     for (const act of ['nexttrack', 'previoustrack', 'stop']) {
       try { navigator.mediaSession.setActionHandler(act, () => { log('tasto: ' + act); toggle(); }); } catch (e) { log('azione non supportata: ' + act); }
     }
@@ -266,7 +278,7 @@ $('copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(txt); stateEl.textContent = 'Registro copiato: incollalo nella chat.'; } catch (e) { stateEl.textContent = 'Copia non riuscita: ' + e.message; }
 });
 document.addEventListener('visibilitychange', () => log('visibilita: ' + document.visibilityState));
-ka.addEventListener('pause', () => { if (active) ka.play().catch(() => {}); });
+ka.addEventListener('pause', () => { if (active && !realPaused) ka.play().catch(() => {}); });
 </script>
 </body>
 </html>
