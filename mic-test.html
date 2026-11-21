@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v14)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v15)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -160,7 +160,7 @@ const toggle = () => (listening ? stop() : start());
 let probeStream = null, probeTaps = 0;
 function probeStatus() {                                       // one line on screen: taps received so far and which microphone is open
   const track = probeStream && probeStream.getAudioTracks()[0];
-  stateEl.textContent = 'Tocchi ricevuti: ' + probeTaps + '  |  microfono: ' + (track ? track.label : 'CHIUSO');
+  stateEl.textContent = 'Tocchi ricevuti: ' + probeTaps + '  |  microfono: ' + (track ? track.label + (track.muted ? ' (MUTO)' : '') : 'CHIUSO');
 }
 function probeTap(what) { probeTaps++; log('TOCCO #' + probeTaps + ' = ' + what); beep(1); probeStatus(); }
 function probeCloseMic() {
@@ -188,8 +188,11 @@ async function probeOpenMic(deviceId, label) {
     probeOpenRaw = probeRaw;
     const track = probeStream.getAudioTracks()[0];
     log('impostazioni reali del microfono: ' + JSON.stringify(track.getSettings()));   // shows what the browser really applied (echoCancellation etc.)
-    track.onmute = () => log('microfono MUTO dal browser'); track.onunmute = () => log('microfono di nuovo attivo');
-    track.onended = () => log('microfono TERMINATO dal sistema');
+    // v15: a tap while the Bluetooth (HFP) audio link is up may make Android DISCONNECT that link (AOSP processKeyPressed): the mic track then
+    // mutes or ends; show it at once in the log AND on the status line, because it could itself be a (indirect) signal of the tap
+    track.onmute = () => { log('microfono MUTO dal browser'); probeStatus(); };
+    track.onunmute = () => { log('microfono di nuovo attivo'); probeStatus(); };
+    track.onended = () => { log('microfono TERMINATO dal sistema (collegamento audio caduto?)'); if (probeStream && probeStream.getAudioTracks()[0] === track) probeStream = null; probeStatus(); };
     log('MICROFONO APERTO: ' + track.label + ' (scelto: ' + label + ') state=' + track.readyState + ' muted=' + track.muted + '  --> ORA fai i tocchi');
   } catch (e) { log('microfono NON aperto: ' + e.name + ' ' + e.message); }
   probeBusy = false;
