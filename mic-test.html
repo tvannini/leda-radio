@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v15)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v16)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -30,7 +30,7 @@
 // One earbud press ("pause" media action) toggles: 1st press = start listening, 2nd press = stop ("send": here only shown). Short beeps tell which.
 // Modes (address): ?mode=sr (default) browser speech recognition (Italian); ?mode=rec records the audio (MediaRecorder) and shows its size.
 const Q = new URLSearchParams(location.search);
-const MODE = ['rec', 'probe'].includes(Q.get('mode')) ? Q.get('mode') : 'sr';   // v8: 'probe' = does the earbud tap arrive while the microphone is open?
+const MODE = ['rec', 'probe', 'vox'].includes(Q.get('mode')) ? Q.get('mode') : 'sr';   // v8: 'probe' = does the earbud tap arrive while the microphone is open?
 // v11 (2026-11-21): Tommaso counted my beeps: after 5-6 double taps the page answered after the 2nd, 4th, 6th only (every SECOND gesture
 // is lost, the earbud beeps every time). Hypothesis: the earbud (or the Android Bluetooth stack) keeps a play/pause state of its own and
 // sends 'pause' while the phone says 'playing'; after our pause handler the next gesture becomes a 'play' that is dropped because the session
@@ -87,6 +87,7 @@ function beep(times) {                                         // audible feedba
 }
 
 async function start() {
+  if (MODE === 'vox') return;      // vox has no start/stop by button
   if (listening) return;
   listening = true; fatal = false; finalText = ''; interim = ''; textEl.textContent = '';
   stateEl.textContent = 'Registro... (premi di nuovo per fermare)';
@@ -242,6 +243,54 @@ async function activateProbe() {
   probeStatus();
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// v16 VOX MODE (?mode=vox&mic=Bluetooth), 2026-11-21: FEASIBILITY of 'voice activation' (no taps). The Bluetooth mic stays open and the page
+// does only VOICE ACTIVITY DETECTION: it cuts the speech into phrases. Nothing leaves the phone: each phrase gets a player under the text, to
+// judge the quality of the Bluetooth-mic audio. To measure: does the mic stay live and the page alive with the screen off; does the detector
+// hear the phrases (a short beep in the earbud after each captured phrase). Stay SILENT for the first 5 s (noise calibration).
+// Options: ?thr=0.02 fixed threshold, ?sil=1500 (ms of pause that ends a phrase).
+function startVox() {
+  const track = stream.getAudioTracks()[0];
+  track.onended = () => log('microfono TERMINATO dal sistema'); track.onunmute = () => log('microfono di nuovo attivo');
+  const src = ac.createMediaStreamSource(stream);
+  const proc = ac.createScriptProcessor(2048, 1, 1);    // driven by the audio callbacks, NOT by timers: not slowed down when the page is hidden
+  const mute = ac.createGain(); mute.gain.value = 0;     // the processor must be connected to the output to run, but must stay silent
+  src.connect(proc); proc.connect(mute); mute.connect(ac.destination);
+  const calibUntil = Date.now() + 5000, calib = [];
+  let thr = parseFloat(Q.get('thr')) || 0, speaking = false, loudMs = 0, quietMs = 0, segs = 0, lvlMax = 0, segStart = 0, vr = null, vchunks = [];
+  const SILENCE_MS = parseInt(Q.get('sil'), 10) || 1500;
+  function segmentDone() {
+    segs++;
+    const blob = new Blob(vchunks, { type: vr.mimeType });
+    log('FRASE #' + segs + ': ' + ((Date.now() - segStart) / 1000).toFixed(1) + ' s, ' + blob.size + ' byte');
+    beep(1);                                              // short beep in the earbud = phrase captured
+    try { const p = document.createElement('audio'); p.controls = true; p.src = URL.createObjectURL(blob); p.style.width = '100%'; textEl.appendChild(document.createTextNode('#' + segs)); textEl.appendChild(p); } catch (x) {}
+  }
+  proc.onaudioprocess = (e) => {
+    const d = e.inputBuffer.getChannelData(0); let sum = 0;
+    for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    const rms = Math.sqrt(sum / d.length), ms = d.length / ac.sampleRate * 1000;
+    lvlMax = Math.max(lvlMax, rms);
+    if (!thr) {                                           // the first 5 s: measure the background noise, then set the threshold above it
+      if (Date.now() < calibUntil) { calib.push(rms); return; }
+      const mean = calib.reduce((a, b) => a + b, 0) / Math.max(1, calib.length);
+      thr = Math.max(mean * 4, 0.01); log('soglia voce calibrata: ' + thr.toFixed(4) + ' (rumore medio ' + mean.toFixed(4) + ', ' + calib.length + ' campioni)');
+    }
+    if (rms > thr) { loudMs += ms; quietMs = 0; } else { quietMs += ms; if (!speaking) loudMs = 0; }
+    if (!speaking && loudMs >= 150) {                     // speech begins: record this phrase
+      speaking = true; segStart = Date.now(); vchunks = [];
+      try { vr = new MediaRecorder(stream); vr.ondataavailable = (ev) => vchunks.push(ev.data); vr.onstop = segmentDone; vr.start(); } catch (x) { log('ERRORE registratore: ' + x.name); }
+    } else if (speaking && quietMs >= SILENCE_MS) {       // a long enough pause: the phrase is over
+      speaking = false; try { vr.stop(); } catch (x) {}
+    }
+  };
+  setInterval(() => {                                     // heartbeat: mic state, tone state, loudest level of the last 5 s, threshold, phrases so far
+    log('cuore: mic=' + track.readyState + (track.muted ? ' MUTO' : '') + ' tono=' + (ka.paused ? 'FERMO' : 'in corso') + ' livello max=' + lvlMax.toFixed(3) + ' soglia=' + thr.toFixed(3) + (speaking ? ' PARLA' : '') + ' frasi=' + segs);
+    lvlMax = 0;
+  }, 5000);
+  stateEl.textContent = 'VOX attivo: 5 secondi di SILENZIO per la calibrazione, poi parla. Un bip dopo ogni frase catturata.';
+}
+
 $('activate').addEventListener('click', async () => {
   if (MODE === 'probe') { await activateProbe(); return; }
   // v4: immediate visible feedback (v3 gave none while the microphone permission was pending, so the page looked frozen)
@@ -258,15 +307,15 @@ $('activate').addEventListener('click', async () => {
     clearTimeout(waitTimer);
     const track = stream.getAudioTracks()[0];
     log('permesso microfono OK: ' + (track && track.label));
-    if (KEEP && MODE === 'rec') { log('microfono TENUTO APERTO (keep=1)'); stream.getAudioTracks()[0].onmute = () => log('microfono MUTO dal browser'); }
+    if ((KEEP && MODE === 'rec') || MODE === 'vox') { log('microfono TENUTO APERTO'); stream.getAudioTracks()[0].onmute = () => log('microfono MUTO dal browser'); }
     else { stream.getTracks().forEach((t) => t.stop()); stream = null; log('microfono rilasciato (si riapre solo al tocco)'); }   // v6: rec reopens it in start()
   } catch (e) { clearTimeout(waitTimer); log('permesso microfono NEGATO: ' + e.name + ' ' + e.message); }
   ka.play().then(() => log('tono OK'), (e) => log('tono ERRORE ' + e.name));
   // v14: keep the screen ON while the page is visible (needed for the Web Speech fallback, which dies when the page is hidden). The lock is
   // released by the browser every time the page is hidden, so it is requested again when the page becomes visible.
   const takeWakeLock = () => { if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then(() => log('schermo tenuto acceso (wake lock)'), (e) => log('wake lock ERRORE ' + e.name)); };
-  takeWakeLock();
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') takeWakeLock(); });
+  if (MODE !== 'vox') takeWakeLock();    // vox: the screen must be allowed to go off by itself
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && MODE !== 'vox') takeWakeLock(); });
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({ title: 'Prova microfono', artist: 'Leda radio' });
     navigator.mediaSession.playbackState = 'playing';
@@ -277,6 +326,7 @@ $('activate').addEventListener('click', async () => {
     }
   }
   active = true;
+  if (MODE === 'vox' && stream) startVox();
   $('activate').hidden = true; $('manual').hidden = false;
   stateEl.textContent = 'Pronto (' + MODE + '). Premi il tasto dell\'auricolare una volta per iniziare, di nuovo per fermare.';
 });
