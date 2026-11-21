@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>Prova microfono con il tasto dell'auricolare (v16)</h1>
+<h1>Prova microfono con il tasto dell'auricolare (v17)</h1>
 <button id="activate">Attiva</button>
 <div id="state">Premi "Attiva" (chiede il permesso del microfono).</div>
 <button id="manual" class="secondary" hidden>Avvia / ferma a mano</button>
@@ -258,6 +258,11 @@ function startVox() {
   src.connect(proc); proc.connect(mute); mute.connect(ac.destination);
   const calibUntil = Date.now() + 5000, calib = [];
   let thr = parseFloat(Q.get('thr')) || 0, speaking = false, loudMs = 0, quietMs = 0, segs = 0, lvlMax = 0, segStart = 0, vr = null, vchunks = [];
+  // v17: run 1 showed 'livello max=0.000' for the whole time the page was hidden, but 0 could mean 'the audio callback stopped' as well as 'digital
+  // silence'. Two independent measures per heartbeat: cb = number of audio callbacks in the last 5 s; byte = bytes produced by a MediaRecorder that
+  // runs ALL THE TIME on the same stream (the path that worked hidden in trial 9: ~11-16 KB/s with a voice, ~250 B/s with silence).
+  let cb = 0, crBytes = 0;
+  try { const cr = new MediaRecorder(stream); cr.ondataavailable = (ev) => { crBytes += ev.data.size; }; cr.start(1000); } catch (x) { log('ERRORE registratore continuo: ' + x.name); }
   const SILENCE_MS = parseInt(Q.get('sil'), 10) || 1500;
   function segmentDone() {
     segs++;
@@ -270,7 +275,7 @@ function startVox() {
     const d = e.inputBuffer.getChannelData(0); let sum = 0;
     for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
     const rms = Math.sqrt(sum / d.length), ms = d.length / ac.sampleRate * 1000;
-    lvlMax = Math.max(lvlMax, rms);
+    lvlMax = Math.max(lvlMax, rms); cb++;
     if (!thr) {                                           // the first 5 s: measure the background noise, then set the threshold above it
       if (Date.now() < calibUntil) { calib.push(rms); return; }
       const mean = calib.reduce((a, b) => a + b, 0) / Math.max(1, calib.length);
@@ -285,8 +290,8 @@ function startVox() {
     }
   };
   setInterval(() => {                                     // heartbeat: mic state, tone state, loudest level of the last 5 s, threshold, phrases so far
-    log('cuore: mic=' + track.readyState + (track.muted ? ' MUTO' : '') + ' tono=' + (ka.paused ? 'FERMO' : 'in corso') + ' livello max=' + lvlMax.toFixed(3) + ' soglia=' + thr.toFixed(3) + (speaking ? ' PARLA' : '') + ' frasi=' + segs);
-    lvlMax = 0;
+    log('cuore: mic=' + track.readyState + (track.muted ? ' MUTO' : '') + ' tono=' + (ka.paused ? 'FERMO' : 'in corso') + ' livello max=' + lvlMax.toFixed(3) + ' cb=' + cb + ' byte=' + crBytes + ' soglia=' + thr.toFixed(3) + (speaking ? ' PARLA' : '') + ' frasi=' + segs);
+    lvlMax = 0; cb = 0; crBytes = 0;
   }, 5000);
   stateEl.textContent = 'VOX attivo: 5 secondi di SILENZIO per la calibrazione, poi parla. Un bip dopo ogni frase catturata.';
 }
